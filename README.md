@@ -120,6 +120,7 @@ clang++ examples/http_showcase.cpp -o ftht_showcase.exe -std=c++17 -lws2_32
 clang++ examples/device_panel.cpp -o ftht_device_panel.exe -std=c++17 -lws2_32
 clang++ examples/login_form_demo.cpp -o ftht_login_form_demo.exe -std=c++17 -lws2_32
 clang++ examples/login_draw_demo.cpp -o ftht_login_draw_demo.exe -std=c++17 -lws2_32
+clang++ examples/compile_overwatch.cpp -o ftht_compile_overwatch.exe -std=c++17 -lws2_32
 ```
 
 Windows with MSVC:
@@ -133,6 +134,7 @@ g++ examples/http_showcase.cpp -o ftht_showcase -std=c++17
 g++ examples/device_panel.cpp -o ftht_device_panel -std=c++17
 g++ examples/login_form_demo.cpp -o ftht_login_form_demo -std=c++17
 g++ examples/login_draw_demo.cpp -o ftht_login_draw_demo -std=c++17
+g++ examples/compile_overwatch.cpp -o ftht_compile_overwatch -std=c++17 -pthread
 ```
 
 ## Login Demos
@@ -144,6 +146,28 @@ terminal running the server.
 
 `examples/login_draw_demo.cpp` runs on <http://127.0.0.1:8082/> and uses the
 drawing challenge. Complete the shape challenge to unlock the protected panel.
+
+## Compile Overwatch
+
+`examples/compile_overwatch.cpp` is a tiny live build panel that binds to
+`0.0.0.0` by default. It can wrap a new compile command and capture highlighted
+stdout/stderr, or passively watch an existing build through a log file, periodic
+output command, and process probe. Output is horizontally scrollable by default;
+pass `--wrap` only when wrapping is wanted.
+
+```bash
+# Wrap a future compile and show an optional estimate timer:
+./ftht_compile_overwatch --estimate-minutes 20 -- make -j8
+
+# Watch an already-running compile:
+./ftht_compile_overwatch --log build.log --process 'make -j8'
+
+# Use a periodic command as the live output pane:
+./ftht_compile_overwatch --output-command './build-status.sh'
+
+# Add a periodically refreshed status command:
+./ftht_compile_overwatch --probe 'date; pgrep -af make || true'
+```
 
 ## ESP32 Shape
 
