@@ -75,12 +75,15 @@ int main() {
             ftht::row(3, [&]() {
                 if (ftht::button("Ping", ftht::ColorRole::Accent)) {
                     append_line(logs, sizeof(logs), "[action] ping clicked");
+                    ftht::toast_success("Ping sent");
                 }
                 if (ftht::button("Warn", ftht::ColorRole::Warning)) {
                     append_line(logs, sizeof(logs), "[action] warning clicked");
+                    ftht::toast_warning("Warning toast queued");
                 }
                 if (ftht::button("Open modal")) {
                     ftht::open_modal("Confirm action");
+                    ftht::toast("Modal opened");
                 }
             });
         } else {
@@ -97,6 +100,7 @@ int main() {
                     if (ftht::button("Cancel")) ftht::close_modal();
                     if (ftht::button("Confirm", ftht::ColorRole::Success)) {
                         append_line(logs, sizeof(logs), "[modal] action confirmed");
+                        ftht::toast_success("Action confirmed");
                         ftht::close_modal();
                     }
                 });

@@ -108,8 +108,35 @@ cfg.login_mode = ftht::LoginMode::DrawPenis;
 ```
 
 The drawing challenge exposes a tiny canvas with rectangle and ellipse tools. It accepts
-two nearby ellipses plus one long ellipse or rectangle. Login sessions expire after 10
-minutes of inactivity by default; override with `cfg.login_session_seconds`.
+two nearby ellipses plus one long ellipse or rectangle in any up/down/left/right
+orientation. Login sessions expire after 10 minutes of inactivity by default; override
+with `cfg.login_session_seconds`.
+
+## Toast Notifications
+
+Toasts are queued from the same immediate-mode loop as every other widget. No container
+or user-side JavaScript is required:
+
+```cpp
+if (ftht::button("Save")) {
+    ftht::toast_success("Configuration saved");
+}
+
+ftht::toast("Saved config");
+ftht::toast_warning("CPU usage is high");
+ftht::toast_error("Connection failed");
+```
+
+For longer-lived or dismissible messages, pass a `Toast`:
+
+```cpp
+ftht::Toast t;
+t.message = "Relay restarted";
+t.duration_ms = 5000;
+t.dismissible = true;
+t.type = ftht::ToastType::Success;
+ftht::toast(t);
+```
 
 ## Build
 
@@ -205,6 +232,7 @@ void loop() {
 - `dropdown`, `listbox`, `radio_group`, `tabs`
 - `row`, `scroll_area`
 - `open_modal`, `modal`, `close_modal`
+- `toast`, `toast_success`, `toast_warning`, `toast_error`
 - basic style colors and dark mode
 
 `cfg.client_poll_ms` enables periodic client refresh through the built-in fetch updater. Widget interactions also use fetch updates by default, so controls update without full page reloads.

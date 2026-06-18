@@ -90,6 +90,21 @@ enum class LoginMode {
     Form,
 };
 
+enum class ToastType {
+    Info,
+    Success,
+    Warning,
+    Error,
+};
+
+struct Toast {
+    std::string title;
+    std::string message;
+    int duration_ms = 4000;
+    bool dismissible = false;
+    ToastType type = ToastType::Info;
+};
+
 Style default_dark_style();
 Style one_dark_style();
 void         set_style(const Style& s);
@@ -141,6 +156,11 @@ void text(const char* label);
 void text_wrapped(const char* text);
 void separator();
 void spacing(float px = 8.0f);
+void toast(const char* message);
+void toast(const Toast& toast);
+void toast_success(const char* message);
+void toast_warning(const char* message);
+void toast_error(const char* message);
 
 enum class InputFlags : unsigned {
     Default = 0,
@@ -258,6 +278,12 @@ struct Param {
     std::string value;
 };
 
+struct ActiveToast {
+    uint64_t id = 0;
+    Toast toast;
+    long long created_ms = 0;
+};
+
 struct NextLayoutState {
     bool has_width = false;
     bool fill = false;
@@ -309,6 +335,8 @@ struct Context {
     std::string extra_response_headers;
     std::string login_session_token;
     std::time_t login_session_until = 0;
+    std::vector<ActiveToast> toasts;
+    uint64_t next_toast_id = 1;
     std::string modal_label;
     std::string last_widget_id;
     int status_code = 200;
@@ -329,6 +357,8 @@ static Context& ctx() {
 static void send_response(const std::string& body);
 static void append_css();
 static void append_ink_filters();
+static void append_toast_stack();
+static void append_toast_script();
 
 static void debugf(const char* fmt, ...) {
     Context& c = ctx();
@@ -546,6 +576,10 @@ static uint64_t salted_password_hash(std::string_view password, std::string_view
     return hash_bytes64(material);
 }
 
+static long long now_ms() {
+    return (long long)std::time(nullptr) * 1000ll;
+}
+
 static std::string hex64(uint64_t value) {
     char buf[24];
     std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)value);
@@ -607,6 +641,78 @@ struct LoginCredential {
     uint64_t hash = 0;
     bool ok = false;
 };
+
+static const char* toast_type_class(ToastType type) {
+    switch (type) {
+        case ToastType::Success: return "success";
+        case ToastType::Warning: return "warning";
+        case ToastType::Error: return "error";
+        case ToastType::Info:
+        default: return "info";
+    }
+}
+
+static const char* toast_default_title(ToastType type) {
+    switch (type) {
+        case ToastType::Success: return "Success";
+        case ToastType::Warning: return "Warning";
+        case ToastType::Error: return "Error";
+        case ToastType::Info:
+        default: return "";
+    }
+}
+
+static void prune_toasts() {
+    Context& c = ctx();
+    long long now = now_ms();
+    c.toasts.erase(std::remove_if(c.toasts.begin(), c.toasts.end(), [&](const ActiveToast& item) {
+        int duration = std::max(1000, item.toast.duration_ms);
+        return now - item.created_ms > (long long)duration + 8000ll;
+    }), c.toasts.end());
+    while (c.toasts.size() > 32) c.toasts.erase(c.toasts.begin());
+}
+
+static void queue_toast(const Toast& value) {
+    Context& c = ctx();
+    Toast copy = value;
+    if (copy.title.empty() && copy.message.empty()) return;
+    if (copy.duration_ms <= 0) copy.duration_ms = 4000;
+    if (copy.duration_ms < 1000) copy.duration_ms = 1000;
+    ActiveToast item;
+    item.id = c.next_toast_id++;
+    item.toast = copy;
+    item.created_ms = now_ms();
+    c.toasts.push_back(item);
+    prune_toasts();
+    debugf("toast queued id=%llu type=%s title='%s' message_bytes=%d",
+           (unsigned long long)item.id, toast_type_class(item.toast.type),
+           item.toast.title.c_str(), (int)item.toast.message.size());
+}
+
+static void queue_toast(ToastType type, const char* title, const char* message,
+                        int duration_ms = 4000, bool dismissible = false) {
+    Toast t;
+    t.type = type;
+    t.title = title ? title : "";
+    t.message = message ? message : "";
+    t.duration_ms = duration_ms;
+    t.dismissible = dismissible;
+    queue_toast(t);
+}
+
+static const char* random_draw_success_message() {
+    static const char* messages[] = {
+        "Humanity confirmed. Shape classified as penis. A penis is the only accepted password.",
+        "Authentication successful. Password confirmed to be a penis.",
+        "Access granted. Required penis detected.",
+        "Human verified. Shape quality acceptable.",
+        "Login successful. The penis remains the correct password.",
+        "Authentication complete. The system continues to be disappointed in humanity.",
+        "Login successful. Researchers remain uncertain why users keep drawing that. So they just set it as the only password.",
+    };
+    int count = (int)(sizeof(messages) / sizeof(messages[0]));
+    return messages[std::rand() % count];
+}
 
 static std::string generated_salt() {
     Context& c = ctx();
@@ -732,23 +838,28 @@ static bool register_login_user(const char* username, const char* password, std:
     Context& c = ctx();
     if (!c.cfg.login_allow_registration) {
         message = "Registration is not enabled on this server.";
+        queue_toast(ToastType::Warning, "Registration Unavailable", message.c_str());
         return false;
     }
     if (!c.cfg.login_db_path || !*c.cfg.login_db_path) {
         message = "Registration requires login_db_path so accepted accounts can be saved.";
+        queue_toast(ToastType::Error, "Registration Failed", message.c_str(), 5000, true);
         return false;
     }
     if (!username || !*username || !password || !*password) {
         message = "Choose a username and password.";
+        queue_toast(ToastType::Warning, "Validation Error", message.c_str());
         return false;
     }
     std::vector<LoginCredential> creds = configured_login_credentials();
     if (login_username_exists(creds, username)) {
         message = "That username already exists.";
+        queue_toast(ToastType::Warning, "Validation Error", message.c_str());
         return false;
     }
     if (!prompt_accept_registration(username)) {
         message = "Registration was rejected by the server operator.";
+        queue_toast(ToastType::Warning, "Registration Rejected", message.c_str(), 5000, true);
         return false;
     }
 
@@ -760,9 +871,11 @@ static bool register_login_user(const char* username, const char* password, std:
     creds.push_back(cred);
     if (!save_login_db(creds)) {
         message = "Could not save the accepted registration.";
+        queue_toast(ToastType::Error, "Save Failed", message.c_str(), 5000, true);
         return false;
     }
     message = "Registration accepted.";
+    queue_toast(ToastType::Success, "Registration Saved", "Accepted account saved to the login store.");
     return true;
 }
 
@@ -814,7 +927,10 @@ static void append_auth_page_start(const char* title) {
 
 static void append_auth_page_end() {
     Context& c = ctx();
-    c.out += "</form></main></body></html>";
+    append_toast_stack();
+    c.out += "</form></main>";
+    append_toast_script();
+    c.out += "</body></html>";
 }
 
 static void send_auth_page(const std::string& body) {
@@ -896,14 +1012,27 @@ static bool drawing_is_penis(const char* text) {
             float dx = cx1 > cx2 ? cx1 - cx2 : cx2 - cx1;
             float dy = cy1 > cy2 ? cy1 - cy2 : cy2 - cy1;
             float y_tol = std::max(24.0f, std::min(shapes[i].h, shapes[j].h) * 0.65f);
+            float x_tol = std::max(24.0f, std::min(shapes[i].w, shapes[j].w) * 0.65f);
             float min_dx = std::min(shapes[i].w, shapes[j].w) * 0.45f;
             float max_dx = std::max(95.0f, (shapes[i].w + shapes[j].w) * 1.15f);
-            if (dy > y_tol || dx < min_dx || dx > max_dx) continue;
+            float min_dy = std::min(shapes[i].h, shapes[j].h) * 0.45f;
+            float max_dy = std::max(95.0f, (shapes[i].h + shapes[j].h) * 1.15f);
+            bool horizontal_pair = dy <= y_tol && dx >= min_dx && dx <= max_dx;
+            bool vertical_pair = dx <= x_tol && dy >= min_dy && dy <= max_dy;
+            if (!horizontal_pair && !vertical_pair) continue;
 
             float pair_cx = (cx1 + cx2) * 0.5f;
             float pair_cy = (cy1 + cy2) * 0.5f;
             float pair_width = dx + (shapes[i].w + shapes[j].w) * 0.5f;
             float pair_height = std::max(shapes[i].h, shapes[j].h);
+            if (vertical_pair) {
+                pair_width = std::max(shapes[i].w, shapes[j].w);
+                pair_height = dy + (shapes[i].h + shapes[j].h) * 0.5f;
+            }
+            float pair_left = pair_cx - pair_width * 0.5f;
+            float pair_right = pair_cx + pair_width * 0.5f;
+            float pair_top = pair_cy - pair_height * 0.5f;
+            float pair_bottom = pair_cy + pair_height * 0.5f;
 
             for (size_t k = 0; k < shapes.size(); ++k) {
                 if (k == i || k == j || !is_shaft_shape(shapes[k])) continue;
@@ -911,21 +1040,21 @@ static bool drawing_is_penis(const char* text) {
                 float scx = shape_cx(shaft);
                 float scy = shape_cy(shaft);
                 bool vertical = shaft.h >= shaft.w;
-                if (vertical) {
+                if (horizontal_pair && vertical) {
                     float center_tol = std::max(34.0f, pair_width * 0.45f);
                     bool x_aligned = std::abs(scx - pair_cx) <= center_tol;
                     bool end_near_pair =
-                        std::abs((shaft.y + shaft.h) - (pair_cy - pair_height * 0.45f)) <= std::max(44.0f, pair_height * 0.75f) ||
-                        std::abs(shaft.y - (pair_cy + pair_height * 0.45f)) <= std::max(44.0f, pair_height * 0.75f);
-                    bool reaches_pair_row = shaft.y <= pair_cy && (shaft.y + shaft.h) >= pair_cy - pair_height;
+                        std::abs((shaft.y + shaft.h) - pair_top) <= std::max(44.0f, pair_height * 0.75f) ||
+                        std::abs(shaft.y - pair_bottom) <= std::max(44.0f, pair_height * 0.75f);
+                    bool reaches_pair_row = shaft.y <= pair_bottom && (shaft.y + shaft.h) >= pair_top;
                     if (x_aligned && (end_near_pair || reaches_pair_row)) return true;
-                } else {
+                } else if (vertical_pair && !vertical) {
                     float center_tol = std::max(34.0f, pair_height * 0.85f);
                     bool y_aligned = std::abs(scy - pair_cy) <= center_tol;
                     bool end_near_pair =
-                        std::abs((shaft.x + shaft.w) - (pair_cx - pair_width * 0.45f)) <= std::max(44.0f, pair_width * 0.40f) ||
-                        std::abs(shaft.x - (pair_cx + pair_width * 0.45f)) <= std::max(44.0f, pair_width * 0.40f);
-                    bool reaches_pair_col = shaft.x <= pair_cx && (shaft.x + shaft.w) >= pair_cx;
+                        std::abs((shaft.x + shaft.w) - pair_left) <= std::max(44.0f, pair_width * 0.75f) ||
+                        std::abs(shaft.x - pair_right) <= std::max(44.0f, pair_width * 0.75f);
+                    bool reaches_pair_col = shaft.x <= pair_right && (shaft.x + shaft.w) >= pair_left;
                     if (y_aligned && (end_near_pair || reaches_pair_col)) return true;
                 }
             }
@@ -1295,6 +1424,7 @@ static bool serve_auth_if_needed() {
         c.login_session_token.clear();
         c.login_session_until = 0;
         c.extra_response_headers += "Set-Cookie: ftht_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax\r\n";
+        queue_toast(ToastType::Info, "Logged Out", "Session cleared.");
         send_redirect_home();
         return true;
     }
@@ -1305,8 +1435,10 @@ static bool serve_auth_if_needed() {
         if (c.cfg.login_mode == LoginMode::DrawPenis && std::strcmp(login_action, "draw") == 0) {
             if (drawing_is_penis(find_param("_ftht_shapes"))) {
                 start_login_session();
+                queue_toast(ToastType::Success, "Authentication Successful", random_draw_success_message(), 6000, true);
                 send_redirect_home();
             } else {
+                queue_toast(ToastType::Warning, "Authentication Failed", "Shape was not classified as penis. A penis is the only accepted password.", 5000, true);
                 render_draw_login_page("Not quite. The recognizer wants two nearby ellipses and one long ellipse or rectangle.");
             }
             return true;
@@ -1320,10 +1452,13 @@ static bool serve_auth_if_needed() {
                       salted_password_hash(password, cred.salt) == cred.hash;
             if (ok) {
                 start_login_session();
+                queue_toast(ToastType::Success, "Authentication Successful", "Signed in.");
                 send_redirect_home();
             } else if (configured_login_credentials().empty()) {
+                queue_toast(ToastType::Error, "Login Not Configured", "Set login_password or login_password_hash before using form login.", 5000, true);
                 render_form_login_page("Set login_password or login_password_hash before using form login.");
             } else {
+                queue_toast(ToastType::Error, "Authentication Failed", "Invalid username or password.", 5000, true);
                 render_form_login_page("Invalid username or password.");
             }
             return true;
@@ -1335,6 +1470,7 @@ static bool serve_auth_if_needed() {
             std::string message;
             if (register_login_user(user, password, message)) {
                 start_login_session();
+                queue_toast(ToastType::Success, "Authentication Successful", "Registered and signed in.");
                 send_redirect_home();
             } else {
                 render_form_login_page(message.c_str());
@@ -1497,7 +1633,7 @@ static void append_css() {
     c.out += ":root{color-scheme:light dark;--desk:#d9d6c7;--paper:#fffefa;--paper2:#f2f0e6;--ink:#050505;--muted:#333;--faint:#777;--border:#050505;";
     c.out += "--panel:" + color_css(s.panel) + ";--text:" + color_css(s.text) + ";--dim:" + color_css(s.text_dim);
     c.out += ";--button:#fffefa;--hover:#efeee5;--active:#e4e1d3;--input:#fffefa;--focus:" + color_css(s.input_focus);
-    c.out += ";--accent:" + color_css(s.accent) + ";--warning:" + color_css(s.warning) + ";--success:" + color_css(s.success) + ";}";
+    c.out += ";--accent:" + color_css(s.accent) + ";--warning:" + color_css(s.warning) + ";--success:" + color_css(s.success) + ";--error:#d94b4b;}";
     if (c.cfg.dark_mode) {
         c.out += ":root{--desk:#060607;--paper:#101011;--paper2:#181819;--ink:#f5f3e8;--muted:#c6c2b5;--faint:#898579;--border:#f5f3e8;--button:#151516;--hover:#202023;--active:#2b2b2f;--input:#0b0b0c;}";
     }
@@ -1523,8 +1659,13 @@ static void append_css() {
     c.out += ".ft-tabs{display:flex;gap:8px;flex-wrap:wrap}.ft-tabs .sel,button.sel{background:var(--ink);border-color:var(--ink);color:var(--paper);box-shadow:3px 3px 0 var(--faint)}.ft-scroll{overflow:auto;border:2px solid var(--border);border-radius:2px;padding:10px;background:var(--paper2)}";
     c.out += "details{border:2px solid var(--border);border-radius:2px;padding:10px;background:var(--paper2)}summary{cursor:pointer;font-weight:900}.ft-modal{position:fixed;inset:0;background:rgba(0,0,0,.58);display:grid;place-items:center;padding:20px;z-index:10}.ft-modal>section{width:min(560px,100%);background:var(--paper);color:var(--ink);border:3px solid var(--border);border-radius:2px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:8px 10px 0 rgba(0,0,0,.28);filter:url(#ftht-rough-ink-light)}";
     c.out += ".accent{background:var(--accent);border-color:var(--border);color:#fff}.warning{background:var(--warning);border-color:var(--border);color:#0b0807}.success{background:var(--success);border-color:var(--border);color:#071007}";
+    c.out += ".ft-toast-stack{position:fixed;right:18px;bottom:18px;z-index:60;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:none;width:min(420px,calc(100vw - 24px))}";
+    c.out += ".ft-toast{pointer-events:auto;width:100%;display:grid;grid-template-columns:1fr auto;gap:6px 10px;background:var(--paper);color:var(--ink);border:2px solid var(--border);border-left-width:8px;border-radius:2px;padding:10px 10px 10px 12px;box-shadow:5px 6px 0 rgba(0,0,0,.22);filter:url(#ftht-rough-ink-light);opacity:0;transform:translateY(8px);animation:ft-toast-in .18s ease forwards}";
+    c.out += ".ft-toast-info{border-left-color:var(--accent)}.ft-toast-success{border-left-color:var(--success)}.ft-toast-warning{border-left-color:var(--warning)}.ft-toast-error{border-left-color:var(--error)}";
+    c.out += ".ft-toast-title{font-weight:900;text-transform:uppercase;font-size:12px;color:var(--muted);letter-spacing:.04em}.ft-toast-body{grid-column:1;margin:0;font-weight:800}.ft-toast-close{grid-column:2;grid-row:1/span 2;align-self:start;min-height:24px;min-width:24px;padding:0 6px;box-shadow:2px 2px 0 var(--border);font-size:16px;line-height:1}.ft-toast-out{animation:ft-toast-out .20s ease forwards}";
+    c.out += "@keyframes ft-toast-in{to{opacity:1;transform:translateY(0)}}@keyframes ft-toast-out{to{opacity:0;transform:translateY(8px)}}";
     c.out += ".ft-bleed{pointer-events:none;position:absolute;inset:0;border:0 solid transparent;opacity:0}";
-    c.out += "@media(prefers-color-scheme:dark){.accent{color:#fff}.warning,.success{color:#050505}}@media(max-width:720px){main{margin:0;padding:14px;border-width:2px;box-shadow:none}.ft-row{grid-template-columns:1fr!important}}";
+    c.out += "@media(prefers-color-scheme:dark){.accent{color:#fff}.warning,.success{color:#050505}}@media(max-width:720px){main{margin:0;padding:14px;border-width:2px;box-shadow:none}.ft-row{grid-template-columns:1fr!important}.ft-toast-stack{left:10px;right:10px;bottom:10px;width:auto;align-items:stretch}.ft-toast{width:100%}}";
     c.out += "</style>";
 }
 
@@ -1549,6 +1690,110 @@ static void append_ink_filters() {
     c.out += "<feComposite in=\"SourceGraphic\" in2=\"thresh\" operator=\"over\"/>";
     c.out += "</filter>";
     c.out += "</defs></svg>";
+}
+
+static void append_toast_stack() {
+    Context& c = ctx();
+    prune_toasts();
+    if (c.toasts.empty()) return;
+    c.out += "<div class=\"ft-toast-stack\" aria-live=\"polite\" aria-atomic=\"false\">";
+    for (const ActiveToast& item : c.toasts) {
+        const Toast& t = item.toast;
+        std::string title = t.title;
+        if (title.empty()) title = toast_default_title(t.type);
+        c.out += "<section class=\"ft-toast ft-toast-";
+        c.out += toast_type_class(t.type);
+        c.out += "\" data-ft-toast-id=\"";
+        c.out += std::to_string((unsigned long long)item.id);
+        c.out += "\" data-ft-toast-duration=\"";
+        c.out += std::to_string(std::max(1000, t.duration_ms));
+        c.out += "\" role=\"";
+        c.out += t.type == ToastType::Error ? "alert" : "status";
+        c.out += "\">";
+        c.out += "<div>";
+        if (!title.empty()) {
+            c.out += "<div class=\"ft-toast-title\">";
+            c.out += escape_html(title);
+            c.out += "</div>";
+        }
+        if (!t.message.empty()) {
+            c.out += "<p class=\"ft-toast-body\">";
+            c.out += escape_html(t.message);
+            c.out += "</p>";
+        }
+        c.out += "</div>";
+        if (t.dismissible) {
+            c.out += "<button type=\"button\" class=\"ft-toast-close\" aria-label=\"Dismiss toast\">&times;</button>";
+        }
+        c.out += "</section>";
+    }
+    c.out += "</div>";
+}
+
+static void append_toast_script() {
+    Context& c = ctx();
+    c.out += R"(<script>
+(() => {
+  if (window.__fthtToastClient) {
+    if (window.__fthtInitToasts) window.__fthtInitToasts(document);
+    return;
+  }
+  window.__fthtToastClient = true;
+  const dismissed = window.__fthtDismissedToasts || (window.__fthtDismissedToasts = new Set());
+  function ensureStack() {
+    let stack = null;
+    for (const child of document.body.children) {
+      if (child.classList && child.classList.contains("ft-toast-stack")) {
+        stack = child;
+        break;
+      }
+    }
+    if (!stack) {
+      stack = document.createElement("div");
+      stack.className = "ft-toast-stack";
+      stack.setAttribute("aria-live", "polite");
+      stack.setAttribute("aria-atomic", "false");
+      document.body.appendChild(stack);
+    }
+    return stack;
+  }
+  function dismissToast(el) {
+    if (!el || el.classList.contains("ft-toast-out")) return;
+    const id = el.getAttribute("data-ft-toast-id");
+    if (id) dismissed.add(id);
+    el.classList.add("ft-toast-out");
+    setTimeout(() => el.remove(), 240);
+  }
+  window.__fthtInitToasts = function(root) {
+    root = root || document;
+    const sources = Array.from(root.querySelectorAll(".ft-toast-stack"));
+    if (!sources.length) return;
+    const stack = ensureStack();
+    for (const source of sources) {
+      if (source === stack) continue;
+      const items = Array.from(source.querySelectorAll(".ft-toast"));
+      for (const item of items) {
+        const id = item.getAttribute("data-ft-toast-id") || "";
+        if (id && dismissed.has(id)) {
+          item.remove();
+          continue;
+        }
+        if (id && stack.querySelector(`[data-ft-toast-id="${id}"]`)) {
+          item.remove();
+          continue;
+        }
+        const close = item.querySelector(".ft-toast-close");
+        if (close) close.addEventListener("click", () => dismissToast(item));
+        const duration = Math.max(1000, Number(item.getAttribute("data-ft-toast-duration") || 4000));
+        stack.appendChild(item);
+        setTimeout(() => dismissToast(item), duration);
+      }
+      if (source !== stack) source.remove();
+    }
+  };
+  window.__fthtInitToasts(document);
+})();
+</script>)";
 }
 
 static void append_client_script() {
@@ -1641,6 +1886,7 @@ static void append_client_script() {
       if (!next) throw new Error("response did not contain <main>");
       shell.innerHTML = next.innerHTML;
       initRanges(shell);
+      if (window.__fthtInitToasts) window.__fthtInitToasts(shell);
       restoreActive(snapshot);
       const doneAt = performance.now();
       log("updated", res.status, html.length, "fetch_ms", (fetchedAt - startedAt).toFixed(1), "swap_ms", (doneAt - fetchedAt).toFixed(1), "total_ms", (doneAt - startedAt).toFixed(1));
@@ -1764,6 +2010,8 @@ bool create_server(const Config& cfg) {
     std::srand((unsigned)std::time(nullptr));
     c.login_session_token.clear();
     c.login_session_until = 0;
+    c.toasts.clear();
+    c.next_toast_id = 1;
     debugf("create_server title='%s' host='%s' port=%d max_request_bytes=%d read_timeout_ms=%d client_poll_ms=%d auto_submit=%d debug=%d client_debug=%d dark_mode=%d browser_dark=%d login_mode=%d login_idle_seconds=%d",
            cfg.title ? cfg.title : "", cfg.host ? cfg.host : "", cfg.port, cfg.max_request_bytes,
            cfg.read_timeout_ms, cfg.client_poll_ms, cfg.auto_submit ? 1 : 0,
@@ -1882,8 +2130,10 @@ void end() {
         c.out += escape_html(c.modal_label);
         c.out += "</p><button name=\"_ftht_action\" value=\"_ftht_close_modal\">Close</button></section></div>";
     }
+    append_toast_stack();
     c.out += "</form></main>";
     if (!c.client_update) {
+        append_toast_script();
         append_client_script();
         c.out += "</body></html>";
     }
@@ -1949,6 +2199,37 @@ void spacing(float px) {
     char buf[80];
     std::snprintf(buf, sizeof(buf), "<div style=\"height:%.1fpx\"></div>", px);
     internal::ctx().out += buf;
+}
+
+void toast(const char* message) {
+    Toast t;
+    t.message = message ? message : "";
+    internal::queue_toast(t);
+}
+
+void toast(const Toast& value) {
+    internal::queue_toast(value);
+}
+
+void toast_success(const char* message) {
+    Toast t;
+    t.type = ToastType::Success;
+    t.message = message ? message : "";
+    internal::queue_toast(t);
+}
+
+void toast_warning(const char* message) {
+    Toast t;
+    t.type = ToastType::Warning;
+    t.message = message ? message : "";
+    internal::queue_toast(t);
+}
+
+void toast_error(const char* message) {
+    Toast t;
+    t.type = ToastType::Error;
+    t.message = message ? message : "";
+    internal::queue_toast(t);
 }
 
 bool input(const char* label, char* buffer, int buffer_size, InputFlags flags, bool* enter_pressed) {
