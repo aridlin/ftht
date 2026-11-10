@@ -1,0 +1,41 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "ftht",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "build-release/compile_overwatch",
+      "size": 242880,
+      "sha256": "5df493d0bfa99f23867eaf1a253ddd0de0d3dee20515183786c3a2a322e93df8"
+    },
+    {
+      "path": "build-release/device_panel",
+      "size": 200776,
+      "sha256": "05da9d77037d746857b000de0294c2d332fc7431a6fa237fc46d925b26d30963"
+    },
+    {
+      "path": "build-release/http_showcase",
+      "size": 196320,
+      "sha256": "35464e1af2973f4279dd912bde370cbb43b5a3f9b8ea4564b2e99a98a37971b1"
+    },
+    {
+      "path": "build-release/login_draw_demo",
+      "size": 195216,
+      "sha256": "93e5cc13fb4881dd551f17618f2d48a38622cf4cd2f73862e74a383dc748b437"
+    },
+    {
+      "path": "build-release/login_form_demo",
+      "size": 195248,
+      "sha256": "90e58c9e70fa767fcecc78214535e17104b99271db4a2843af49834ab128ff68"
+    }
+  ],
+  "checks": [
+    {
+      "job": "ftht",
+      "passed": true,
+      "command": "mkdir -p build-release; for file in examples/*.cpp; do c++ \"$file\" -std=c++17 -O2 -DNDEBUG -pthread -o \"build-release/$(basename \"$file\" .cpp)\" || exit; done"
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}
